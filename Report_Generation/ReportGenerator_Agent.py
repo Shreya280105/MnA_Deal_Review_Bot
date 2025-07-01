@@ -1,50 +1,59 @@
+from crewai import Agent, Task, Crew
+from langchain_openai import ChatOpenAI
 import json
-from datetime import datetime
-class ReportGeneratorAgent:
-    def __init__(self,
-                 cleaned_data_path="output/cleaned_deal_data.json",
-                 red_flag_path="output/red_flag_results.json"):
-        self.cleaned_data_path = cleaned_data_path
-        self.red_flag_path = red_flag_path
-    def load_data(self):
-        with open(self.cleaned_data_path, "r") as f1, open(self.red_flag_path, "r") as f2:
-            return json.load(f1), json.load(f2)
-    def assess_recommendation(self, red_flags):
-        if not red_flags:
-            return " Proceed with the deal"
-        elif len(red_flags) <= 2:
-            return " Investigate further before proceeding"
-        else:
-            return " Deal not recommended"
-    def generate_report(self):
-        cleaned_data, red_flags_data = self.load_data()
-        final_report = []
-        for deal, red_flag_entry in zip(cleaned_data, red_flags_data):
-            structured = deal.get("structured_data", {})
-            flags = red_flag_entry.get("flags", [])
-            recommendation = self.assess_recommendation(flags)
-            report = f"""
+from fpdf import FPDF
 
-================= M&A Deal Report #{red_flag_entry['index']} =================
-Title       : {deal.get("title")}
-URL         : {deal.get("url")}
-Date        : {datetime.now().strftime("%Y-%m-%d")}
---- Extracted Key Details ---
-Target Company    : {structured.get('target') or 'N/A'}
-Deal Value        : {structured.get('deal_value') or 'N/A'}
-Deal Type         : {structured.get('deal_type') or 'N/A'}
-Announcement Date : {structured.get('announcement_date') or 'N/A'}
-Closing Date      : {structured.get('closing_date') or 'N/A'}
-Special Terms     : {', '.join(structured.get('special_terms') or ['None'])}
---- Red Flags ---
-{chr(10).join(['- ' + flag for flag in flags]) or 'None'}
---- Final Recommendation ---
-{recommendation}
-=========================================================
-"""
-            final_report.append(report.strip())
-        return "\n\n".join(final_report)
+def load_flags(f):
+    try:
+        with open(f, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception as e:
+        print(f"Error loading {f}: {e}")
+        return []
+def save_pdf(text, filename):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    for line in text.split('\n'):
+        pdf.multi_cell(0, 8, line)
+    pdf.output(filename)
+    print(f" Saved PDF report as {filename}")
+def gen_report(flags):
+    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+    ag = Agent(
+        role="ReportWriter",
+        goal="Generate a detailed M&A readiness report from red flag data.",
+        backstory="An expert M&A report agent creating clear acquisition decision reports.",
+        llm=llm,
+        verbose=True
+    )
+    combined_txt = "\n\n".join([f"File: {f['file']}\nResult: {f['result']}" for f in flags])
+    t = Task(
+        description=f"""Using the extracted red flags and financial anomalies below, generate a detailed acquisition readiness report with sections for:
+- Company Overview
+- Key Financial Findings
+- Identified Red Flags
+- Potential Risks
+- Recommendations
+Data:
+{combined_txt[:6000]}
+""",
+        expected_output="Structured M&A readiness report.",
+        agent=ag
+    )
+    c = Crew(
+        agents=[ag],
+        tasks=[t],
+        verbose=True
+    )
+    r = c.kickoff()
+    report_txt = str(r)  # converting CrewOutput to string
+
+    print("\nGenerated Report Preview:\n", report_txt[:1000], "...\n")
+    save_pdf(report_txt, "mna_readiness_report.pdf")
 if __name__ == "__main__":
-    generator = ReportGeneratorAgent()
-    output = generator.generate_report()
-    print(output)
+    flags = load_flags("sebi_redflag_output.json")
+    if flags:
+        gen_report(flags)
+    else:
+        print(" No flagged data found to generate report.")
